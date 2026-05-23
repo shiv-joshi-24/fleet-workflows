@@ -1,19 +1,10 @@
 name: Agent Fleet Trigger
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Drop this file into any project at .github/workflows/fleet-trigger.yml
-# Then add a .fleet.yml config to your project root.
-# Required GitHub Secrets (set once at org level or per repo):
-#   VPS_SSH_KEY, VPS_HOST, VPS_USER, FLEET_DIR
-# ─────────────────────────────────────────────────────────────────────────────
-
 on:
   issues:
     types: [labeled]
-
   pull_request:
     types: [opened, synchronize, reopened]
-
   workflow_dispatch:
     inputs:
       title:
@@ -32,12 +23,10 @@ on:
         description: "Pipeline agents (comma-separated) or leave blank"
         required: false
         default: ""
-
   schedule:
     - cron: "0 2 * * *"
 
 jobs:
-  # ── Job 1: Resolve trigger into a normalised task spec ──────────────────────
   resolve:
     name: Resolve trigger
     runs-on: ubuntu-latest
@@ -72,7 +61,6 @@ jobs:
             let pr_number    = '';
             let source       = event;
 
-            // ── Issue labeled ─────────────────────────────────────────────
             if (event === 'issues' && context.payload.action === 'labeled') {
               const issue  = context.payload.issue;
               const labels = issue.labels.map(l => l.name.toLowerCase());
@@ -81,25 +69,24 @@ jobs:
                 core.setOutput('should_run', 'false'); return;
               }
 
-              if      (labels.includes('claude:expert'))   agent = 'expert';
-              else if (labels.includes('claude:senior'))   agent = 'senior';
-              else if (labels.includes('claude:junior'))   agent = 'junior';
-              else if (labels.includes('claude:review'))   agent = 'senior';
-              else                                          agent = 'auto';
+              if      (labels.includes('claude:expert'))  agent = 'expert';
+              else if (labels.includes('claude:senior'))  agent = 'senior';
+              else if (labels.includes('claude:junior'))  agent = 'junior';
+              else if (labels.includes('claude:review'))  agent = 'senior';
+              else                                         agent = 'auto';
 
-              if (labels.includes('claude:pipeline'))      pipeline = 'junior,senior,expert';
-              if (labels.includes('claude:priority'))      priority = '2';
+              if (labels.includes('claude:pipeline'))     pipeline = 'junior,senior,expert';
+              if (labels.includes('claude:priority'))     priority = '2';
 
               task_title   = issue.title;
               task_body    = [
                 issue.body || '(no description)',
                 '',
-                '---',
-                `Source: GitHub Issue #${issue.number}`,
-                `Repo: ${repoOwner}/${repoName}`,
-                `URL: ${issue.html_url}`,
-                `Labels: ${labels.join(', ')}`,
-                `Author: ${issue.user.login}`,
+                'Source: GitHub Issue #' + issue.number,
+                'Repo: ' + repoOwner + '/' + repoName,
+                'URL: ' + issue.html_url,
+                'Labels: ' + labels.join(', '),
+                'Author: ' + issue.user.login,
               ].join('\n');
 
               issue_number = String(issue.number);
@@ -107,27 +94,26 @@ jobs:
               source       = 'github_issue';
             }
 
-            // ── Pull request ──────────────────────────────────────────────
             else if (event === 'pull_request') {
               const pr = context.payload.pull_request;
               if (pr.draft) { core.setOutput('should_run', 'false'); return; }
 
-              task_title = `Code review: ${pr.title}`;
+              task_title = 'Code review: ' + pr.title;
               task_body  = [
                 'Review this pull request for bugs, security issues, and best practices.',
                 'Focus on: correctness, edge cases, error handling, and code style.',
                 '',
-                `PR: ${pr.title}`,
-                `Branch: ${pr.head.ref} → ${pr.base.ref}`,
-                `Author: ${pr.user.login}`,
-                `Files changed: ${pr.changed_files}`,
-                `+${pr.additions} / -${pr.deletions}`,
+                'PR: ' + pr.title,
+                'Branch: ' + pr.head.ref + ' to ' + pr.base.ref,
+                'Author: ' + pr.user.login,
+                'Files changed: ' + pr.changed_files,
+                '+' + pr.additions + ' / -' + pr.deletions,
                 '',
                 'Description:',
                 pr.body || '(none)',
                 '',
-                `URL: ${pr.html_url}`,
-                `Repo: ${repoOwner}/${repoName}`,
+                'URL: ' + pr.html_url,
+                'Repo: ' + repoOwner + '/' + repoName,
               ].join('\n');
 
               agent      = 'senior';
@@ -136,29 +122,27 @@ jobs:
               source     = 'github_pr';
             }
 
-            // ── Manual dispatch ───────────────────────────────────────────
             else if (event === 'workflow_dispatch') {
               const inp  = context.payload.inputs;
               task_title = inp.title;
-              task_body  = inp.body + `\n\nRepo: ${repoOwner}/${repoName}`;
+              task_body  = inp.body + '\nRepo: ' + repoOwner + '/' + repoName;
               agent      = inp.agent || 'auto';
               pipeline   = inp.pipeline || '';
               should_run = true;
               source     = 'manual';
             }
 
-            // ── Scheduled nightly ─────────────────────────────────────────
             else if (event === 'schedule') {
-              task_title = `Nightly maintenance: ${repoName}`;
+              task_title = 'Nightly maintenance: ' + repoName;
               task_body  = [
                 'Run the following maintenance tasks for this project:',
                 '1. Dependency audit (check for vulnerabilities)',
                 '2. Verify tests pass',
                 '3. Check for obvious code quality issues',
-                '4. Summarise findings — flag anything urgent',
+                '4. Summarise findings - flag anything urgent',
                 '',
-                `Repo: ${repoOwner}/${repoName}`,
-                `Run: ${new Date().toISOString()}`,
+                'Repo: ' + repoOwner + '/' + repoName,
+                'Run: ' + new Date().toISOString(),
               ].join('\n');
               agent      = 'senior';
               priority   = '8';
@@ -177,7 +161,6 @@ jobs:
             core.setOutput('source',       source);
             core.setOutput('repo_name',    repoName);
 
-  # ── Job 2: Acknowledge immediately ─────────────────────────────────────────
   acknowledge:
     name: Acknowledge
     needs: resolve
@@ -193,29 +176,28 @@ jobs:
             const agent    = '${{ needs.resolve.outputs.agent }}';
             const pipeline = '${{ needs.resolve.outputs.pipeline }}';
             const source   = '${{ needs.resolve.outputs.source }}';
-            const number   = '${{ needs.resolve.outputs.issue_number }}' ||
-                             '${{ needs.resolve.outputs.pr_number }}';
+            const number   = '${{ needs.resolve.outputs.issue_number }}'
+                          || '${{ needs.resolve.outputs.pr_number }}';
 
             const agentLine = pipeline
-              ? `**Pipeline:** ${pipeline.split(',').join(' → ')}`
-              : `**Agent:** ${agent === 'auto' ? 'auto-routing' : agent}`;
+              ? 'Pipeline: ' + pipeline.split(',').join(' -> ')
+              : 'Agent: ' + (agent === 'auto' ? 'auto-routing' : agent);
 
             await github.rest.issues.createComment({
               owner:        context.repo.owner,
               repo:         context.repo.repo,
               issue_number: parseInt(number),
               body: [
-                '🤖 **Agent Fleet — Task Received**',
+                '🤖 **Agent Fleet - Task Received**',
                 '',
                 agentLine,
-                `**Source:** ${source}`,
-                `**Workflow:** [View run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+                '**Source:** ' + source,
+                '**Workflow:** [View run](' + context.serverUrl + '/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId + ')',
                 '',
                 '_Dispatching to VPS now. Results will be posted here when complete._',
               ].join('\n'),
             });
 
-  # ── Job 3: SSH into VPS, read .fleet.yml, dispatch task ────────────────────
   dispatch:
     name: Dispatch to VPS
     needs: [resolve, acknowledge]
@@ -228,33 +210,27 @@ jobs:
       task_id: ${{ steps.dispatch.outputs.task_id }}
 
     steps:
-      - name: Checkout project (to read .fleet.yml)
+      - name: Checkout project
         uses: actions/checkout@v4
 
       - name: Read .fleet.yml config
         id: config
         run: |
           if [ -f ".fleet.yml" ]; then
-            # Parse workdir
             WORKDIR=$(grep -E '^workdir:' .fleet.yml | awk '{print $2}' | tr -d '"' || echo "")
-            # Parse branch_strategy
             BRANCH_STRATEGY=$(grep -E '^branch_strategy:' .fleet.yml | awk '{print $2}' | tr -d '"' || echo "new-branch")
-            # Parse test_command
             TEST_CMD=$(grep -E '^test_command:' .fleet.yml | cut -d':' -f2- | xargs || echo "npm test")
           else
             WORKDIR=""
             BRANCH_STRATEGY="new-branch"
             TEST_CMD="npm test"
           fi
-
-          # Fallback workdir: use repo name under ~/projects/
           if [ -z "$WORKDIR" ]; then
             WORKDIR="~/projects/${{ needs.resolve.outputs.repo_name }}"
           fi
-
-          echo "workdir=${WORKDIR}"           >> $GITHUB_OUTPUT
+          echo "workdir=${WORKDIR}"                 >> $GITHUB_OUTPUT
           echo "branch_strategy=${BRANCH_STRATEGY}" >> $GITHUB_OUTPUT
-          echo "test_cmd=${TEST_CMD}"         >> $GITHUB_OUTPUT
+          echo "test_cmd=${TEST_CMD}"               >> $GITHUB_OUTPUT
 
       - name: Install SSH key
         run: |
@@ -263,11 +239,10 @@ jobs:
           chmod 600 ~/.ssh/fleet_key
           ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Write task body to file
-        run: |
-          cat > /tmp/task_body_${{ github.run_id }}.txt << 'BODYEOF'
-          ${{ needs.resolve.outputs.task_body }}
-          BODYEOF
+      - name: Write task body to temp file
+        env:
+          TASK_BODY: ${{ needs.resolve.outputs.task_body }}
+        run: printf '%s' "$TASK_BODY" > /tmp/task_body_${{ github.run_id }}.txt
 
       - name: Copy task body to VPS
         run: |
@@ -279,75 +254,62 @@ jobs:
       - name: Dispatch via SSH
         id: dispatch
         env:
-          AGENT:           ${{ needs.resolve.outputs.agent }}
-          PIPELINE:        ${{ needs.resolve.outputs.pipeline }}
-          PRIORITY:        ${{ needs.resolve.outputs.priority }}
-          SOURCE:          ${{ needs.resolve.outputs.source }}
-          WORKDIR:         ${{ steps.config.outputs.workdir }}
-          BRANCH_STRATEGY: ${{ steps.config.outputs.branch_strategy }}
-          TEST_CMD:        ${{ steps.config.outputs.test_cmd }}
-          REPO_NAME:       ${{ needs.resolve.outputs.repo_name }}
-          RUN_ID:          ${{ github.run_id }}
+          FLEET_DIR:       ${{ secrets.FLEET_DIR }}
+          TASK_TITLE:      ${{ needs.resolve.outputs.task_title }}
+          TASK_AGENT:      ${{ needs.resolve.outputs.agent }}
+          TASK_PIPELINE:   ${{ needs.resolve.outputs.pipeline }}
+          TASK_PRIORITY:   ${{ needs.resolve.outputs.priority }}
+          TASK_SOURCE:     ${{ needs.resolve.outputs.source }}
+          TASK_RUN_ID:     ${{ github.run_id }}
+          TASK_REPO:       ${{ github.repository }}
+          TASK_WORKDIR:    ${{ steps.config.outputs.workdir }}
+          TASK_BRANCH:     ${{ steps.config.outputs.branch_strategy }}
+          TASK_TEST_CMD:   ${{ steps.config.outputs.test_cmd }}
         run: |
           TASK_ID=$(ssh -i ~/.ssh/fleet_key \
             -o StrictHostKeyChecking=no \
             -o ConnectTimeout=30 \
+            -o SendEnv="FLEET_DIR TASK_TITLE TASK_AGENT TASK_PIPELINE TASK_PRIORITY TASK_SOURCE TASK_RUN_ID TASK_REPO TASK_WORKDIR TASK_BRANCH TASK_TEST_CMD" \
             "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            FLEET_DIR="${{ secrets.FLEET_DIR }}" \
-            WORKDIR="$WORKDIR" \
-            AGENT="$AGENT" \
-            PIPELINE="$PIPELINE" \
-            PRIORITY="$PRIORITY" \
-            SOURCE="$SOURCE" \
-            BRANCH_STRATEGY="$BRANCH_STRATEGY" \
-            TEST_CMD="$TEST_CMD" \
-            REPO_NAME="$REPO_NAME" \
-            RUN_ID="$RUN_ID" \
-            'bash -s' << 'SSHEOF'
-              set -e
-              FLEET="${FLEET_DIR:-$HOME/agent-fleet}"
-              cd "$FLEET"
+            'bash -s' << 'ENDSSH'
+          set -e
+          FLEET="${FLEET_DIR:-$HOME/agent-fleet}"
+          cd "$FLEET"
 
-              # Auto-clone project if not present on VPS
-              PROJ_DIR=$(eval echo "$WORKDIR")
-              if [ ! -d "$PROJ_DIR" ]; then
-                mkdir -p "$(dirname "$PROJ_DIR")"
-                git clone "https://github.com/${{ github.repository }}.git" "$PROJ_DIR"
-                echo "Cloned ${{ github.repository }} to $PROJ_DIR"
-              else
-                # Pull latest
-                git -C "$PROJ_DIR" pull --ff-only 2>/dev/null || true
-              fi
+          PROJ_DIR=$(eval echo "$TASK_WORKDIR")
 
-              # Read task body
-              BODY=$(cat "/tmp/fleet_task_${RUN_ID}.txt")
-              rm -f "/tmp/fleet_task_${RUN_ID}.txt"
+          if [ ! -d "$PROJ_DIR" ]; then
+            mkdir -p "$(dirname "$PROJ_DIR")"
+            git clone "https://github.com/${TASK_REPO}.git" "$PROJ_DIR"
+          else
+            git -C "$PROJ_DIR" pull --ff-only 2>/dev/null || true
+          fi
 
-              # Build extra context for the agent
-              CONTEXT="Working directory: $PROJ_DIR
-Branch strategy: $BRANCH_STRATEGY
-Test command: $TEST_CMD
-Repository: ${{ github.repository }}"
+          BODY=$(cat "/tmp/fleet_task_${TASK_RUN_ID}.txt")
+          rm -f "/tmp/fleet_task_${TASK_RUN_ID}.txt"
 
-              FULL_BODY="$BODY
+          CONTEXT="Working directory: ${PROJ_DIR}
+          Branch strategy: ${TASK_BRANCH}
+          Test command: ${TASK_TEST_CMD}
+          Repository: ${TASK_REPO}"
 
----
-$CONTEXT"
+          FULL_BODY="${BODY}
+          ${CONTEXT}"
 
-              TITLE="${{ needs.resolve.outputs.task_title }}"
-
-              if [ -n "$PIPELINE" ]; then
-                TASK_ID=$(node cli.js pipeline-raw "$TITLE" "$FULL_BODY" "$PIPELINE" "$RUN_ID" "$SOURCE" "$PROJ_DIR")
-              else
-                TASK_ID=$(node cli.js add-raw "$TITLE" "$FULL_BODY" "$PRIORITY" "$AGENT" "$SOURCE" "$RUN_ID" "$PROJ_DIR")
-              fi
-
-              echo "$TASK_ID"
-          SSHEOF
+          if [ -n "$TASK_PIPELINE" ]; then
+            node cli.js pipeline-raw \
+              "$TASK_TITLE" "$FULL_BODY" "$TASK_PIPELINE" \
+              "$TASK_RUN_ID" "$TASK_SOURCE" "$PROJ_DIR"
+          else
+            node cli.js add-raw \
+              "$TASK_TITLE" "$FULL_BODY" "$TASK_PRIORITY" \
+              "$TASK_AGENT" "$TASK_SOURCE" "$TASK_RUN_ID" "$PROJ_DIR"
+          fi
+          ENDSSH
           )
 
           echo "task_id=${TASK_ID}" >> $GITHUB_OUTPUT
-          echo "Dispatched task: ${TASK_ID}"
+          echo "Dispatched: ${TASK_ID}"
 
       - name: Comment task ID
         if: |
@@ -356,16 +318,15 @@ $CONTEXT"
         uses: actions/github-script@v7
         with:
           script: |
-            const number = '${{ needs.resolve.outputs.issue_number }}' ||
-                           '${{ needs.resolve.outputs.pr_number }}';
+            const number = '${{ needs.resolve.outputs.issue_number }}'
+                        || '${{ needs.resolve.outputs.pr_number }}';
             await github.rest.issues.createComment({
               owner:        context.repo.owner,
               repo:         context.repo.repo,
               issue_number: parseInt(number),
-              body: `📋 **Task queued**  \`${{ steps.dispatch.outputs.task_id }}\`\n\n_Agent is working. Results posted here when done._`,
+              body: '📋 **Task queued** `${{ steps.dispatch.outputs.task_id }}`\n\n_Agent is working. Results posted here when done._',
             });
 
-  # ── Job 4: Poll for result and post back ────────────────────────────────────
   report:
     name: Report result
     needs: [resolve, dispatch]
@@ -386,6 +347,8 @@ $CONTEXT"
 
       - name: Poll VPS for completion
         id: poll
+        env:
+          FLEET_DIR: ${{ secrets.FLEET_DIR }}
         run: |
           TASK_ID="${{ needs.dispatch.outputs.task_id }}"
           MAX=60
@@ -393,17 +356,19 @@ $CONTEXT"
 
           while [ $ATTEMPT -lt $MAX ]; do
             RESULT=$(ssh -i ~/.ssh/fleet_key \
-              -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=15 \
               "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-              "cd ${FLEET_DIR:-\$HOME/agent-fleet} && node cli.js task-json $TASK_ID" 2>/dev/null || echo '{}')
+              "cd ${FLEET_DIR:-\$HOME/agent-fleet} && node cli.js task-json ${TASK_ID}" \
+              2>/dev/null || echo '{}')
 
             STATUS=$(echo "$RESULT" | python3 -c \
-              "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+              "import sys,json; print(json.load(sys.stdin).get('status',''))" \
+              2>/dev/null || echo "")
 
-            echo "[$ATTEMPT] status: $STATUS"
+            echo "[${ATTEMPT}] status: ${STATUS}"
 
             if [[ "$STATUS" == "complete" || "$STATUS" == "failed" || "$STATUS" == "cancelled" ]]; then
-              # Escape for GitHub output
               RESULT_SAFE="${RESULT//'%'/'%25'}"
               RESULT_SAFE="${RESULT_SAFE//$'\n'/'%0A'}"
               RESULT_SAFE="${RESULT_SAFE//$'\r'/'%0D'}"
@@ -419,40 +384,43 @@ $CONTEXT"
           if [ $ATTEMPT -ge $MAX ]; then
             echo "status=timeout" >> $GITHUB_OUTPUT
           fi
-        env:
-          FLEET_DIR: ${{ secrets.FLEET_DIR }}
 
       - name: Post result comment
         uses: actions/github-script@v7
         with:
           script: |
             const status = '${{ steps.poll.outputs.status }}';
-            const number = '${{ needs.resolve.outputs.issue_number }}' ||
-                           '${{ needs.resolve.outputs.pr_number }}';
+            const number = '${{ needs.resolve.outputs.issue_number }}'
+                        || '${{ needs.resolve.outputs.pr_number }}';
             const taskId = '${{ needs.dispatch.outputs.task_id }}';
 
             let result = {};
             try {
-              const raw = decodeURIComponent('${{ steps.poll.outputs.result }}'.replace(/%0A/g,'\n').replace(/%0D/g,'\r').replace(/%25/g,'%'));
+              const raw = decodeURIComponent(
+                '${{ steps.poll.outputs.result }}'
+                  .replace(/%0A/g, '\n')
+                  .replace(/%0D/g, '\r')
+                  .replace(/%25/g, '%')
+              );
               result = JSON.parse(raw || '{}');
             } catch {}
 
             const output  = (result.output || '').slice(0, 3500);
             const error   = (result.error  || '').slice(0, 800);
             const agentId = result.agent_id || 'unknown';
-
-            const emoji = { complete:'✅', failed:'❌', cancelled:'🚫', timeout:'⏱️' }[status] || '❓';
+            const emoji   = { complete:'✅', failed:'❌', cancelled:'🚫', timeout:'⏱️' }[status] || '❓';
 
             const parts = [
-              `${emoji} **Agent Fleet — ${status.charAt(0).toUpperCase()+status.slice(1)}**`,
+              emoji + ' **Agent Fleet - ' + status.charAt(0).toUpperCase() + status.slice(1) + '**',
               '',
-              `**Task:** \`${taskId}\`  **Agent:** ${agentId}`,
+              '**Task:** `' + taskId + '`  **Agent:** ' + agentId,
               '',
             ];
 
             if (output) {
-              parts.push('<details><summary>View output</summary>', '', '```', output);
-              if ((result.output||'').length > 3500) parts.push('... (truncated)');
+              parts.push('<details><summary>View output</summary>', '', '```');
+              parts.push(output);
+              if ((result.output || '').length > 3500) parts.push('... (truncated)');
               parts.push('```', '', '</details>');
             }
 
@@ -461,7 +429,7 @@ $CONTEXT"
             }
 
             if (status === 'timeout') {
-              parts.push('', '_Task still running on VPS. Check dashboard for live status._');
+              parts.push('', '_Task still running. Check dashboard for live status._');
             }
 
             await github.rest.issues.createComment({
@@ -471,7 +439,6 @@ $CONTEXT"
               body:         parts.join('\n'),
             });
 
-            // Auto-close issue on success
             if (status === 'complete' && '${{ needs.resolve.outputs.issue_number }}') {
               await github.rest.issues.update({
                 owner:        context.repo.owner,
