@@ -1,0 +1,64 @@
+# .fleet.yml
+# Agent Fleet project configuration.
+# Place this file in your project root alongside the workflow file.
+# All fields are optional — sensible defaults apply if omitted.
+
+# ── Where on the VPS this project lives ───────────────────────────────────────
+# The VPS will auto-clone your repo here if it doesn't exist.
+# Supports ~ for home directory.
+workdir: ~/projects/my-project
+
+# ── How the agent handles file changes ────────────────────────────────────────
+# new-branch   → creates a branch per task, opens a draft PR (recommended)
+# report-only  → analyses and comments, never touches files (safest)
+# work-on-main → commits directly to current branch (personal projects only)
+branch_strategy: new-branch
+
+# Base branch to create task branches from
+base_branch: main
+
+# ── Agent routing overrides ────────────────────────────────────────────────────
+# Override auto-routing for specific task types detected by keyword
+agents:
+  default: senior          # fallback when no keywords match
+  security: expert         # override: security/auth/audit tasks → expert
+  frontend: junior         # override: UI/CSS/component tasks → junior
+  architecture: expert     # override: design/architecture tasks → expert
+
+# ── Commands Claude runs inside your project ──────────────────────────────────
+test_command: npm test
+lint_command: npm run lint
+build_command: npm run build
+
+# ── Issue/PR behaviour ─────────────────────────────────────────────────────────
+# Automatically close the GitHub issue when task completes successfully
+auto_close_issues: true
+
+# Add a label to the issue after task completes
+# label_on_complete: "fleet:done"
+# label_on_failed:   "fleet:needs-review"
+
+# ── Notifications ──────────────────────────────────────────────────────────────
+# Which events trigger ntfy phone notification
+notify_on:
+  - complete
+  - failed
+
+# ── Nightly schedule ───────────────────────────────────────────────────────────
+# Customise what the nightly maintenance task does for this project
+nightly_task: |
+  Run the following maintenance checks:
+  1. npm audit — flag any high/critical vulnerabilities
+  2. Run tests — report pass/fail count
+  3. Check for any TODO/FIXME comments added recently
+  4. Summarise in 3-5 bullet points
+
+# ── Context injected into every task ──────────────────────────────────────────
+# Extra context Claude gets at the start of every task for this project.
+# Describe your tech stack, conventions, or anything Claude should always know.
+project_context: |
+  Tech stack: Node.js, Express, PostgreSQL
+  Code style: ESLint + Prettier, 2-space indent
+  Test framework: Jest
+  Branch naming: feat/*, fix/*, chore/*
+  Never modify: .env files, database migrations without explicit instruction
