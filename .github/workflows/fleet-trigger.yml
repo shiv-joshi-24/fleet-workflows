@@ -1,10 +1,35 @@
 name: Agent Fleet Trigger
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SETUP
+# 1. Copy this file to .github/workflows/fleet-trigger.yml in your project
+# 2. Add a .fleet.yml config to your project root (see templates/.fleet.yml)
+# 3. Set these GitHub Secrets (repo or org level):
+#      VPS_SSH_KEY  — private key from setup-vps-for-github.sh
+#      VPS_HOST     — VPS IP or hostname
+#      VPS_USER     — SSH user (fleet-runner)
+#      FLEET_DIR    — path to agent-fleet on VPS (e.g. /home/ubuntu/agent-fleet)
+#
+# LABEL REFERENCE (add to your repo via setup-github-labels.sh)
+#   claude:run        → auto-route to best agent based on keywords
+#   claude:junior     → assign to Junior Dev agent
+#   claude:senior     → assign to Senior Dev agent
+#   claude:expert     → assign to Expert Architect agent
+#   claude:pipeline   → run Junior → Senior → Expert in sequence
+#   claude:review     → code review by Senior (good for PRs)
+#   claude:priority   → bump to front of queue (priority 2)
+# ─────────────────────────────────────────────────────────────────────────────
+
 on:
+  # Trigger when a label is added to an issue
   issues:
     types: [labeled]
+
+  # Trigger on PR open/update — auto code review by Senior agent
   pull_request:
     types: [opened, synchronize, reopened]
+
+  # Manual trigger from GitHub Actions UI (Actions tab → Run workflow)
   workflow_dispatch:
     inputs:
       title:
@@ -23,10 +48,16 @@ on:
         description: "Pipeline agents (comma-separated) or leave blank"
         required: false
         default: ""
+
+  # Nightly maintenance task at 2 AM UTC
   schedule:
     - cron: "0 2 * * *"
 
 jobs:
+  # ── Job 1 ───────────────────────────────────────────────────────────────────
+  # Reads the trigger (issue/PR/manual/schedule) and normalises it into
+  # a consistent task spec that all downstream jobs consume via outputs.
+  # ────────────────────────────────────────────────────────────────────────────
   resolve:
     name: Resolve trigger
     runs-on: ubuntu-latest
@@ -61,14 +92,18 @@ jobs:
             let pr_number    = '';
             let source       = event;
 
+            // ── Issue labeled ─────────────────────────────────────────────
+            // Only fires when a claude: label is added. Ignores all other labels.
             if (event === 'issues' && context.payload.action === 'labeled') {
               const issue  = context.payload.issue;
               const labels = issue.labels.map(l => l.name.toLowerCase());
 
+              // Skip if no claude: label present
               if (!labels.some(l => l.startsWith('claude:'))) {
                 core.setOutput('should_run', 'false'); return;
               }
 
+              // Agent routing — explicit label takes priority over auto
               if      (labels.includes('claude:expert'))  agent = 'expert';
               else if (labels.includes('claude:senior'))  agent = 'senior';
               else if (labels.includes('claude:junior'))  agent = 'junior';
@@ -94,6 +129,8 @@ jobs:
               source       = 'github_issue';
             }
 
+            // ── Pull request ──────────────────────────────────────────────
+            // Auto-assigns Senior agent for code review. Skips draft PRs.
             else if (event === 'pull_request') {
               const pr = context.payload.pull_request;
               if (pr.draft) { core.setOutput('should_run', 'false'); return; }
@@ -122,6 +159,8 @@ jobs:
               source     = 'github_pr';
             }
 
+            // ── Manual dispatch ───────────────────────────────────────────
+            // Triggered from Actions tab → Run workflow. Uses form inputs directly.
             else if (event === 'workflow_dispatch') {
               const inp  = context.payload.inputs;
               task_title = inp.title;
@@ -132,6 +171,8 @@ jobs:
               source     = 'manual';
             }
 
+            // ── Scheduled nightly ─────────────────────────────────────────
+            // Runs at 2 AM UTC. Customise the task body in .fleet.yml nightly_task.
             else if (event === 'schedule') {
               task_title = 'Nightly maintenance: ' + repoName;
               task_body  = [
@@ -145,7 +186,7 @@ jobs:
                 'Run: ' + new Date().toISOString(),
               ].join('\n');
               agent      = 'senior';
-              priority   = '8';
+              priority   = '8';  // low priority — don't block real tasks
               should_run = true;
               source     = 'schedule';
             }
@@ -161,6 +202,11 @@ jobs:
             core.setOutput('source',       source);
             core.setOutput('repo_name',    repoName);
 
+  # ── Job 2 ───────────────────────────────────────────────────────────────────
+  # Posts an immediate "Task Received" comment on the issue/PR so the author
+  # knows the workflow fired. Runs in parallel with dispatch — no waiting.
+  # Skipped for manual dispatch and schedule (no issue/PR to comment on).
+  # ────────────────────────────────────────────────────────────────────────────
   acknowledge:
     name: Acknowledge
     needs: resolve
@@ -198,6 +244,15 @@ jobs:
               ].join('\n'),
             });
 
+  # ── Job 3 ───────────────────────────────────────────────────────────────────
+  # SSHes into the VPS and queues the task via fleet CLI.
+  # Reads .fleet.yml from the project repo to get workdir, branch strategy, etc.
+  # Auto-clones the project on the VPS if not already present.
+  # Outputs the task_id for the report job to poll against.
+  #
+  # NOTE: All task variables are passed as SSH env vars (not inline in the
+  # command string) to avoid YAML special character conflicts.
+  # ────────────────────────────────────────────────────────────────────────────
   dispatch:
     name: Dispatch to VPS
     needs: [resolve, acknowledge]
@@ -215,6 +270,8 @@ jobs:
 
       - name: Read .fleet.yml config
         id: config
+        # Parses the three most important fields from .fleet.yml.
+        # Falls back to safe defaults if the file is missing.
         run: |
           if [ -f ".fleet.yml" ]; then
             WORKDIR=$(grep -E '^workdir:' .fleet.yml | awk '{print $2}' | tr -d '"' || echo "")
@@ -225,6 +282,7 @@ jobs:
             BRANCH_STRATEGY="new-branch"
             TEST_CMD="npm test"
           fi
+          # Default workdir if not set: ~/projects/<repo-name>
           if [ -z "$WORKDIR" ]; then
             WORKDIR="~/projects/${{ needs.resolve.outputs.repo_name }}"
           fi
@@ -240,11 +298,15 @@ jobs:
           ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Write task body to temp file
+        # Using printf + env var avoids any escaping issues with special
+        # characters in the task body (quotes, backslashes, etc.)
         env:
           TASK_BODY: ${{ needs.resolve.outputs.task_body }}
         run: printf '%s' "$TASK_BODY" > /tmp/task_body_${{ github.run_id }}.txt
 
       - name: Copy task body to VPS
+        # SCP the body file separately so it doesn't need to be embedded
+        # in the SSH command string (avoids escaping and size limits)
         run: |
           scp -i ~/.ssh/fleet_key \
             -o StrictHostKeyChecking=no \
@@ -253,6 +315,9 @@ jobs:
 
       - name: Dispatch via SSH
         id: dispatch
+        # All task variables are passed as SSH environment variables via SendEnv.
+        # This avoids embedding dynamic values in the heredoc which would cause
+        # YAML parse errors (especially values containing dashes or special chars).
         env:
           FLEET_DIR:       ${{ secrets.FLEET_DIR }}
           TASK_TITLE:      ${{ needs.resolve.outputs.task_title }}
@@ -276,8 +341,10 @@ jobs:
           FLEET="${FLEET_DIR:-$HOME/agent-fleet}"
           cd "$FLEET"
 
+          # Resolve ~ in workdir path
           PROJ_DIR=$(eval echo "$TASK_WORKDIR")
 
+          # Auto-clone project if not present, otherwise pull latest
           if [ ! -d "$PROJ_DIR" ]; then
             mkdir -p "$(dirname "$PROJ_DIR")"
             git clone "https://github.com/${TASK_REPO}.git" "$PROJ_DIR"
@@ -285,9 +352,11 @@ jobs:
             git -C "$PROJ_DIR" pull --ff-only 2>/dev/null || true
           fi
 
+          # Read task body from the file SCP'd over in previous step
           BODY=$(cat "/tmp/fleet_task_${TASK_RUN_ID}.txt")
           rm -f "/tmp/fleet_task_${TASK_RUN_ID}.txt"
 
+          # Append project context so the agent knows where it's working
           CONTEXT="Working directory: ${PROJ_DIR}
           Branch strategy: ${TASK_BRANCH}
           Test command: ${TASK_TEST_CMD}
@@ -296,6 +365,7 @@ jobs:
           FULL_BODY="${BODY}
           ${CONTEXT}"
 
+          # Queue as pipeline or single task — prints task ID to stdout
           if [ -n "$TASK_PIPELINE" ]; then
             node cli.js pipeline-raw \
               "$TASK_TITLE" "$FULL_BODY" "$TASK_PIPELINE" \
@@ -312,6 +382,8 @@ jobs:
           echo "Dispatched: ${TASK_ID}"
 
       - name: Comment task ID
+        # Posts a second comment with the internal task ID so it's
+        # visible on the issue for debugging if needed
         if: |
           steps.dispatch.outputs.task_id != '' &&
           (needs.resolve.outputs.issue_number != '' || needs.resolve.outputs.pr_number != '')
@@ -327,6 +399,13 @@ jobs:
               body: '📋 **Task queued** `${{ steps.dispatch.outputs.task_id }}`\n\n_Agent is working. Results posted here when done._',
             });
 
+  # ── Job 4 ───────────────────────────────────────────────────────────────────
+  # Polls the VPS every 30 seconds (up to 30 minutes) until the task reaches
+  # a terminal state (complete/failed/cancelled), then posts the agent output
+  # as an issue comment and closes the issue on success.
+  # Times out after 35 minutes — task keeps running on VPS, result visible
+  # in the dashboard instead.
+  # ────────────────────────────────────────────────────────────────────────────
   report:
     name: Report result
     needs: [resolve, dispatch]
@@ -351,7 +430,7 @@ jobs:
           FLEET_DIR: ${{ secrets.FLEET_DIR }}
         run: |
           TASK_ID="${{ needs.dispatch.outputs.task_id }}"
-          MAX=60
+          MAX=60      # 60 attempts x 30s = 30 minutes max
           ATTEMPT=0
 
           while [ $ATTEMPT -lt $MAX ]; do
@@ -369,6 +448,7 @@ jobs:
             echo "[${ATTEMPT}] status: ${STATUS}"
 
             if [[ "$STATUS" == "complete" || "$STATUS" == "failed" || "$STATUS" == "cancelled" ]]; then
+              # Escape special chars for GitHub output — newlines and percent signs
               RESULT_SAFE="${RESULT//'%'/'%25'}"
               RESULT_SAFE="${RESULT_SAFE//$'\n'/'%0A'}"
               RESULT_SAFE="${RESULT_SAFE//$'\r'/'%0D'}"
@@ -381,6 +461,7 @@ jobs:
             sleep 30
           done
 
+          # If we ran out of attempts, mark as timeout (task still running on VPS)
           if [ $ATTEMPT -ge $MAX ]; then
             echo "status=timeout" >> $GITHUB_OUTPUT
           fi
@@ -394,6 +475,7 @@ jobs:
                         || '${{ needs.resolve.outputs.pr_number }}';
             const taskId = '${{ needs.dispatch.outputs.task_id }}';
 
+            // Decode the escaped result JSON back to a usable object
             let result = {};
             try {
               const raw = decodeURIComponent(
@@ -405,7 +487,7 @@ jobs:
               result = JSON.parse(raw || '{}');
             } catch {}
 
-            const output  = (result.output || '').slice(0, 3500);
+            const output  = (result.output || '').slice(0, 3500);  // truncate long output
             const error   = (result.error  || '').slice(0, 800);
             const agentId = result.agent_id || 'unknown';
             const emoji   = { complete:'✅', failed:'❌', cancelled:'🚫', timeout:'⏱️' }[status] || '❓';
@@ -417,6 +499,7 @@ jobs:
               '',
             ];
 
+            // Wrap output in a collapsible details block to keep comments clean
             if (output) {
               parts.push('<details><summary>View output</summary>', '', '```');
               parts.push(output);
@@ -439,6 +522,7 @@ jobs:
               body:         parts.join('\n'),
             });
 
+            // Auto-close the issue when task completes successfully
             if (status === 'complete' && '${{ needs.resolve.outputs.issue_number }}') {
               await github.rest.issues.update({
                 owner:        context.repo.owner,
