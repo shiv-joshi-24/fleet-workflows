@@ -19,7 +19,7 @@
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
-WORKFLOWS_REPO="${FLEET_WORKFLOWS_REPO:-https://raw.githubusercontent.com/YOUR_ORG/fleet-workflows/main}"
+WORKFLOWS_REPO="${FLEET_WORKFLOWS_REPO:-https://raw.githubusercontent.com/shiv-joshi-24/fleet-workflows/main}"
 GRN='\033[0;32m'; YLW='\033[1;33m'; CYN='\033[0;36m'; NC='\033[0m'; BLD='\033[1m'
 
 ok()   { echo -e "${GRN}✓${NC} $1"; }
